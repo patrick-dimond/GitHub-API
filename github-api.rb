@@ -1,78 +1,50 @@
 require 'net/http'
 require 'time'
 
+class RateLimitExceededError < StandardError
+  attr_reader :reset_time
+  def initialize(msg="Rate limit exceeded", reset_time)
+    @reset_time = reset
+    super
+  end
+end
+
 class GitHubAPI
 
-  attr_reader :etag, :last_request, :poll_interval, :rate_limit, :rate_limit_remaining, 
-    :rate_limit_reset, :body
-  attr_accessor :endpoint
+  attr_reader :poll_interval, :rate_limit, :rate_limit_remaining, 
+    :rate_limit_reset, :base
+  attr_accessor :endpoints
 
-  def initialize(endpoint, options = {})
+  def initialize(options = {})
     
     @base = "https://api.github.com"
     @poll_interval = 0
-    @last_request = Time.now
     @rate_limit = 100
     @rate_limit_remaining = 100
     @rate_limit_reset = Time.now
-    @body = nil
+    @endpoints = init_endpoints(options[:endpoints])
+    @user_agent = options[:user_agent] || ''
+    @auth_token = options[:auth_token] || ''
 
   end
 
-  def polite_get() 
-
-    if !rate_limit_check()
-      return 
-    end
-
-    if !interval_check()
-      return
-    end
-
-    get()
-
+  def init_endpoints(endpoints)
+    return endpoints.map { |endpoint| Endpoint.new(@base + endpoint) }
   end
-
-  def impatient_get()
-
-    if !rate_limit_check()
-      return 
-    end
-
-    get()
-
-  end
-
-  def interval_check()
-
-   if @last_request + @poll_interval > Time.now
-     puts "You must wait #{@last_request + @poll_interval - Time.now} seconds"
-     return false
-   end
-   return true
-
-  end
-
-  def rate_limit_check()
-
-    if @rate_limit_remaining <= 0
-      puts "Rate limit exhausted. Resets at #{@rate_limit_reset.asctime}"
-      return false
-    end
-    return true
-
+  
+  def limit_exceeded()
+    return @rate_limit_reamaining <= 0 ? false : true
   end
 
 
-  def get()
+  def get(endpoint)
 
-    req = Net::HTTP::Get.new(@endpoint)
-    req['If-None-Match'] = @etag unless @etag.nil?
+    raise RateLimitExceededError("Rate limit exceeded", @rate_limit_reset) if limit_exceeded
 
-    use_ssl = @endpoint.scheme == "https" ? true : false
+    req = Net::HTTP::Get.new(endpoint.uri)
+    generate_headers(req, endpoint)
 
-
-    Net::HTTP.start(endpoint.host, endpoint.port, :use_ssl => use_ssl) do |http|
+    Net::HTTP.start(endpoint.uri.host, endpoint.uri.port, :use_ssl => true) do |http|
       
       res = http.request(req)
       @last_request = Time.now
@@ -90,23 +62,27 @@ class GitHubAPI
 
       @body = res.body
 
-      puts "#{@rate_limit_remaining}/#{@rate_limit} requests remaining"
-      puts "Limit resets at #{@rate_limit_reset.asctime}" 
+      update_state(res, endpoint)
 
     end
 
   end
 
+  def generate_headers(req, endpoint)
+    req['User-Agent'] = @user_agent unless @user_agent.empty?
+    req['Authorization'] = "token " + @auth_token unless @auth_token.empty?
+
+    endpoint.generate_headers(req)
+  end
 
   private 
-  def save_headers(res)
-
-    @etag = res['ETag']
+  def update_state(res)
     @poll_interval = res['X-Poll-Interval'].to_i
     @rate_limit = res['X-RateLimit-Limit'].to_i
     @rate_limit_remaining = res['X-RateLimit-Remaining'].to_i
     @rate_limit_reset = Time.at(res['X-RateLimit-Reset'].to_i)
 
+    endpoint.update_state(res)
   end
 
 end
@@ -114,16 +90,32 @@ end
 
 class Endpoint
 
-  attr_reader :etag
+  attr_reader :etag, :body, :last_request
   attr_accessor :uri
 
-  def initialise
-
-    @etag
-    @uri
-
+  def initialise(endpoint, options = {})
+    @etag = ''
+    @uri = URI(endpoint)
+    @last_request = Time.now
+    @body = ''
   end
 
+  def generate_headers(req)
+    req["ETag"] = @etag unless @etag.empty?
+  end
 
+  def update_state(res)
+    @etag = res['ETag']
+    @last_request = Time.now
+    @body = res.body
+  end
+
+  def interval_complete(poll_interval)
+    return @last_request + poll_interval > Time.now ? false : true
+  end
+
+  def to_s
+    @uri
+  end
 
 end
