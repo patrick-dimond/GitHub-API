@@ -2,11 +2,6 @@ require 'net/http'
 require 'time'
 
 class RateLimitExceededError < StandardError
-  attr_reader :reset_time
-  def initialize(msg="Rate limit exceeded", reset_time)
-    @reset_time = reset
-    super
-  end
 end
 
 class GitHubAPI
@@ -33,13 +28,13 @@ class GitHubAPI
   end
   
   def limit_exceeded()
-    return @rate_limit_reamaining <= 0 ? false : true
+    return @rate_limit_remaining <= 0 ? true : false
   end
 
 
   def get(endpoint)
 
-    raise RateLimitExceededError("Rate limit exceeded", @rate_limit_reset) if limit_exceeded
+    raise RateLimitExceededError.new("Rate limit exceeded") if limit_exceeded
 
     req = Net::HTTP::Get.new(endpoint.uri)
     generate_headers(req, endpoint)
@@ -51,16 +46,13 @@ class GitHubAPI
 
       case res
       when Net::HTTPSuccess then
-        save_headers(res)
+        puts "success"
       when Net::HTTPNotModified then
         puts "Nothing new"
-        return
       else
         puts res.value
         return
       end
-
-      @body = res.body
 
       update_state(res, endpoint)
 
@@ -76,7 +68,7 @@ class GitHubAPI
   end
 
   private 
-  def update_state(res)
+  def update_state(res, endpoint)
     @poll_interval = res['X-Poll-Interval'].to_i
     @rate_limit = res['X-RateLimit-Limit'].to_i
     @rate_limit_remaining = res['X-RateLimit-Remaining'].to_i
@@ -93,7 +85,7 @@ class Endpoint
   attr_reader :etag, :body, :last_request
   attr_accessor :uri
 
-  def initialise(endpoint, options = {})
+  def initialize(endpoint, options = {})
     @etag = ''
     @uri = URI(endpoint)
     @last_request = Time.now
@@ -115,7 +107,7 @@ class Endpoint
   end
 
   def to_s
-    @uri
+    @uri.to_s
   end
 
 end
